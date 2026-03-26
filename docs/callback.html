@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Wars — Auth Callback</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 80px auto; padding: 0 24px; color: #222; }
+    h1 { color: #4CAF50; }
+    .box { background: #f4f4f4; border-radius: 8px; padding: 20px; margin-top: 24px; word-break: break-all; font-family: monospace; font-size: 0.9rem; }
+    .label { font-weight: bold; margin-bottom: 8px; }
+    #code-val { color: #1a1a8c; }
+  </style>
+</head>
+<body>
+  <h1>&#10003; Authorization successful</h1>
+  <p>Copy the <strong>code</strong> value below and paste it into your terminal when prompted.</p>
+
+  <div class="box">
+    <div class="label">Full callback URL:</div>
+    <div id="full-url"></div>
+  </div>
+
+  <div class="box">
+    <div class="label">code =</div>
+    <div id="code-val">extracting…</div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    document.getElementById('full-url').textContent = window.location.href;
+    document.getElementById('code-val').textContent = params.get('code') || 'not found';
+  </script>
+</body>
+</html>

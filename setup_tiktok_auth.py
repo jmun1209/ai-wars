@@ -16,7 +16,7 @@ from dotenv import load_dotenv, set_key
 load_dotenv()
 
 _ENV_FILE = Path(__file__).parent / ".env"
-_REDIRECT_URI = "https://localhost/callback"
+_REDIRECT_URI = "https://jmun1209.github.io/ai-wars/callback"
 _SCOPES = "user.info.basic,video.upload"
 _AUTH_BASE = "https://www.tiktok.com/v2/auth/authorize/"
 _TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
@@ -108,20 +108,25 @@ def main() -> None:
     print(f"\n  {_REDIRECT_URI}\n")
     print("  (developers.tiktok.com → your app → Login Kit → Redirect URI)\n")
     print("Step 2 — Opening your browser to authorize…")
-    print("  After you approve, your browser will land on a page that")
-    print("  says 'This site can't be reached' — that's expected.")
-    print("  Copy the FULL URL from the browser address bar.\n")
+    print("  After you approve, you'll land on a page at jmun1209.github.io")
+    print("  that shows your authorization code. Copy the 'code' value.\n")
 
     webbrowser.open(auth_url)
 
     print("-" * 60)
-    pasted = input("Paste the full URL from your browser address bar here:\n> ").strip()
+    pasted = input("Paste the full callback URL OR just the code value here:\n> ").strip()
 
-    try:
-        code, received_state = _extract_code_from_url(pasted)
-    except ValueError as exc:
-        print(f"\nERROR: {exc}")
-        return
+    # Accept either a full URL or a bare code
+    if pasted.startswith("http"):
+        try:
+            code, received_state = _extract_code_from_url(pasted)
+        except ValueError as exc:
+            print(f"\nERROR: {exc}")
+            return
+    else:
+        # Bare code pasted directly
+        code = pasted
+        received_state = state  # trust it since we opened the URL ourselves
 
     if received_state != state:
         print("\nERROR: State mismatch — the URL may be from a different session. Run the script again.")
