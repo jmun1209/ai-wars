@@ -1,4 +1,4 @@
-"""AI Wars — Episode Generator entry point."""
+"""AI Wars — Season-driven episode generator entry point."""
 
 from __future__ import annotations
 
@@ -12,89 +12,109 @@ from typing import Any
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import IntPrompt, Prompt
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import IntPrompt
+from rich.table import Table
 
 load_dotenv()
 
 console = Console()
 
-_CHARACTERS_PATH = Path(__file__).parent / "config" / "characters.json"
+_SEASONS_DIR = Path(__file__).parent / "output" / "seasons"
+_SEASONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_characters() -> dict[str, Any]:
-    """Load character definitions from config/characters.json."""
-    return json.loads(_CHARACTERS_PATH.read_text())["characters"]
+# ---------------------------------------------------------------------------
+# Season UI helpers
+# ---------------------------------------------------------------------------
 
-
-def _intake_form() -> dict[str, Any]:
-    """Display the terminal intake form and collect episode configuration.
-
-    Returns:
-        episode_config dict with all user-provided values.
-    """
+def _show_banner() -> None:
     console.print(
         Panel.fit(
-            "[bold purple]AI Wars — Episode Generator[/bold purple]\n"
-            "[dim]Answer the prompts below to generate your episode.[/dim]",
+            "[bold purple]AI Wars — Season Generator[/bold purple]\n"
+            "[dim]Automated TikTok series about AI models competing to teach you ML.[/dim]",
             border_style="purple",
         )
     )
 
-    characters = _load_characters()
-    char_keys = list(characters.keys())
 
-    # Show character list
-    console.print("\n[bold]Available characters:[/bold]")
-    for i, key in enumerate(char_keys, start=1):
-        char = characters[key]
-        console.print(f"  [cyan]{i}[/cyan]. {char['full_name']} ({char['model_inspiration']})")
+def _show_episode_table(plan: dict[str, Any]) -> None:
+    """Print a rich table of all episodes and their status."""
+    table = Table(title=f"Season {plan['season_number']} — Episode Plan", show_header=True, header_style="bold magenta")
+    table.add_column("#", justify="right", width=3)
+    table.add_column("Title", width=32)
+    table.add_column("Concept", width=28)
+    table.add_column("Characters", width=20)
+    table.add_column("Status", justify="center", width=10)
 
-    episode_number = IntPrompt.ask("\n[bold]Episode number[/bold]")
-    title = Prompt.ask("[bold]Episode title[/bold]")
-    concept = Prompt.ask("[bold]AI concept being taught[/bold] (e.g. RAG, fine-tuning, attention)")
+    for ep in plan["episodes"]:
+        status = ep.get("status", "planned")
+        status_style = "green" if status == "generated" else "yellow" if status == "in_progress" else "dim"
+        table.add_row(
+            str(ep["episode_number"]),
+            ep["title"],
+            ep["concept"],
+            ", ".join(ep.get("characters", [])),
+            f"[{status_style}]{status}[/{status_style}]",
+        )
 
-    console.print("\n[bold]Which characters appear?[/bold] Enter numbers separated by commas (e.g. 1,3)")
-    char_input = Prompt.ask("Characters")
-    selected_chars: list[str] = []
-    for part in char_input.split(","):
-        part = part.strip()
-        if part.isdigit():
-            idx = int(part) - 1
-            if 0 <= idx < len(char_keys):
-                selected_chars.append(char_keys[idx])
-        elif part.lower() in char_keys:
-            selected_chars.append(part.lower())
-    if not selected_chars:
-        selected_chars = char_keys[:2]  # default to first two
-        console.print(f"[dim]Defaulting to: {selected_chars}[/dim]")
-
-    winner = Prompt.ask("[bold]Who wins and why?[/bold] (name — one-sentence reason)")
-    drama = Prompt.ask("[bold]Drama/conflict[/bold] (1-2 sentences)")
-    cliffhanger = Prompt.ask("[bold]Cliffhanger ending[/bold] (1 sentence)")
-    length_seconds = IntPrompt.ask("[bold]Desired video length in seconds[/bold]", default=75)
-
-    return {
-        "episode_number": episode_number,
-        "title": title,
-        "concept": concept,
-        "characters": selected_chars,
-        "winner": winner,
-        "drama": drama,
-        "cliffhanger": cliffhanger,
-        "length_seconds": length_seconds,
-    }
+    console.print(table)
 
 
-async def run_pipeline(episode_config: dict[str, Any], dry_run: bool = False, skip_upload: bool = False) -> None:
-    """Execute the full AI Wars generation pipeline.
+def _spinner(label: str) -> Progress:
+    return Progress(SpinnerColumn(), TextColumn(f"[bold cyan]{label}…"), transient=True)
+
+
+# ---------------------------------------------------------------------------
+# Season planning
+# ---------------------------------------------------------------------------
+
+async def _get_or_create_season(season_number: int) -> dict[str, Any]:
+    """Load existing season plan or generate a new one via the agent pipeline."""
+    from agents import showrunner_agent, season_agent
+
+    plan_path = _SEASONS_DIR / f"season_{season_number}_plan.json"
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text())
+        console.print(f"[green]✓[/green] Loaded existing Season {season_number} plan ({len(plan['episodes'])} episodes)")
+        return plan
+
+    console.print(f"\n[bold]No season plan found for Season {season_number}. Generating now…[/bold]")
+    console.print("[dim]This uses two AI agents and takes about 30-60 seconds.[/dim]\n")
+
+    with _spinner("Showrunner crafting season vision"):
+        vision = await showrunner_agent.generate(season_number)
+
+    console.print(f"[green]✓[/green] Season vision: [italic]{vision.get('tagline', '')}[/italic]")
+    console.print(f"[dim]{vision.get('premise', '')}[/dim]\n")
+
+    with _spinner("Writers room planning 20 episodes"):
+        plan = await season_agent.generate(vision)
+
+    console.print(f"[green]✓[/green] {len(plan['episodes'])} episodes planned\n")
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# Episode pipeline
+# ---------------------------------------------------------------------------
+
+async def run_episode(
+    episode_config: dict[str, Any],
+    plan: dict[str, Any],
+    dry_run: bool = False,
+    skip_upload: bool = False,
+) -> None:
+    """Run the full production pipeline for a single episode.
 
     Args:
-        episode_config: Dict from the intake form.
-        dry_run: If True, skip real API calls and use placeholder assets.
-        skip_upload: If True, stop before the TikTok upload step.
+        episode_config: Episode dict from season_agent.get_episode_config().
+        plan: Full season plan (used to mark episode complete after).
+        dry_run: Skip real API calls; use placeholder files.
+        skip_upload: Stop before TikTok upload.
     """
     from agents import script_agent, caption_agent
+    from agents.season_agent import mark_episode_complete
     from generators import voice_gen, video_gen, visual_gen
     from editor import assemble
     from publisher import tiktok_upload
@@ -102,158 +122,120 @@ async def run_pipeline(episode_config: dict[str, Any], dry_run: bool = False, sk
 
     ep_num = episode_config["episode_number"]
 
-    def _stage(label: str):
-        return Progress(SpinnerColumn(), TextColumn(f"[bold cyan]{label}…"), transient=True)
+    console.print(f"\n[bold purple]Producing Episode {ep_num}: {episode_config['title']}[/bold purple]")
+    console.print(f"[dim]Concept: {episode_config['concept']}[/dim]\n")
 
-    # ------------------------------------------------------------------
-    # Stage 1 — Script
-    # ------------------------------------------------------------------
+    # --- Script ---
     try:
-        with _stage("Generating script"):
-            if dry_run:
-                script = _dry_run_script(episode_config)
-            else:
-                script = await script_agent.generate(episode_config)
-        console.print("[green]✓[/green] Script generated")
+        with _spinner(f"Ep {ep_num} — Writing script"):
+            script = _dry_run_script(episode_config) if dry_run else await script_agent.generate(episode_config)
+        console.print("[green]✓[/green] Script written")
     except Exception as exc:
-        console.print(f"[red]✗ Script generation failed:[/red] {exc}")
+        console.print(f"[red]✗ Script failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 2 — Voiceovers
-    # ------------------------------------------------------------------
+    # --- Voiceovers ---
     try:
-        with _stage("Generating voiceovers"):
-            if dry_run:
-                audio_files: dict = {}
-            else:
-                audio_files = await voice_gen.generate_all(script)
+        with _spinner(f"Ep {ep_num} — Generating voiceovers"):
+            audio_files = {} if dry_run else await voice_gen.generate_all(script)
         console.print("[green]✓[/green] Voiceovers generated")
     except Exception as exc:
-        console.print(f"[red]✗ Voice generation failed:[/red] {exc}")
+        console.print(f"[red]✗ Voice gen failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 3 — Video clips
-    # ------------------------------------------------------------------
+    # --- Video clips ---
     try:
-        with _stage("Generating video clips"):
-            if dry_run:
-                video_clips = _dry_run_clips(script, ep_num)
-            else:
-                video_clips = await video_gen.generate_all(script)
+        with _spinner(f"Ep {ep_num} — Generating video clips"):
+            video_clips = _dry_run_clips(script, ep_num) if dry_run else await video_gen.generate_all(script)
         console.print("[green]✓[/green] Video clips generated")
     except Exception as exc:
-        console.print(f"[red]✗ Video generation failed:[/red] {exc}")
+        console.print(f"[red]✗ Video gen failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 4 — Educational visuals
-    # ------------------------------------------------------------------
+    # --- Visuals ---
     try:
-        with _stage("Generating visuals"):
-            if dry_run:
-                visual_files = _dry_run_visuals(script, ep_num)
-            else:
-                visual_files = await visual_gen.generate_all(script)
+        with _spinner(f"Ep {ep_num} — Generating visuals"):
+            visual_files = _dry_run_visuals(script, ep_num) if dry_run else await visual_gen.generate_all(script)
         console.print("[green]✓[/green] Visuals generated")
     except Exception as exc:
-        console.print(f"[red]✗ Visual generation failed:[/red] {exc}")
+        console.print(f"[red]✗ Visual gen failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 5 — Assembly
-    # ------------------------------------------------------------------
+    # --- Assembly ---
     try:
-        with _stage("Assembling final video"):
-            if dry_run:
-                final_video_path = _dry_run_final(ep_num)
-            else:
-                final_video_path = await assemble.build(script, audio_files, video_clips, visual_files)
-        console.print(f"[green]✓[/green] Video assembled: [bold]{final_video_path}[/bold]")
+        with _spinner(f"Ep {ep_num} — Assembling video"):
+            final_video_path = _dry_run_final(ep_num) if dry_run else await assemble.build(
+                script, audio_files, video_clips, visual_files
+            )
+        console.print(f"[green]✓[/green] Video: [bold]{final_video_path}[/bold]")
     except Exception as exc:
         console.print(f"[red]✗ Assembly failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 6 — TikTok caption copy
-    # ------------------------------------------------------------------
+    # --- Caption ---
     try:
-        with _stage("Generating TikTok caption"):
-            if dry_run:
-                tiktok_copy = {"full_caption": "[dry-run caption]"}
-            else:
-                tiktok_copy = await caption_agent.generate(script, episode_config)
-        console.print("[green]✓[/green] Caption generated")
+        with _spinner(f"Ep {ep_num} — Writing TikTok caption"):
+            tiktok_copy = {"full_caption": "[dry-run]"} if dry_run else await caption_agent.generate(
+                script, episode_config
+            )
+        console.print("[green]✓[/green] Caption written")
     except Exception as exc:
-        console.print(f"[red]✗ Caption generation failed:[/red] {exc}")
+        console.print(f"[red]✗ Caption failed:[/red] {exc}")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Stage 7 — TikTok upload
-    # ------------------------------------------------------------------
+    # --- Upload ---
     if not skip_upload and not dry_run:
         try:
-            with _stage("Uploading to TikTok"):
+            with _spinner(f"Ep {ep_num} — Uploading to TikTok"):
                 upload_result = await tiktok_upload.upload_draft(final_video_path, tiktok_copy)
             if upload_result["success"]:
                 console.print("[green]✓[/green] Uploaded to TikTok drafts")
             else:
-                console.print(f"[yellow]⚠ Upload result:[/yellow] {upload_result['message']}")
+                console.print(f"[yellow]⚠[/yellow] {upload_result['message']}")
         except Exception as exc:
-            console.print(f"[red]✗ TikTok upload failed:[/red] {exc}")
+            console.print(f"[red]✗ Upload failed:[/red] {exc}")
     else:
-        console.print("[dim]Skipping TikTok upload[/dim]")
         upload_result = {"caption_to_paste": tiktok_copy.get("full_caption", "")}
+        console.print("[dim]Skipping TikTok upload[/dim]")
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
-    console.print("\n[bold green]Pipeline complete![/bold green]")
-    console.print(f"Final video: [bold]{final_video_path}[/bold]")
-    console.print("\n[bold]TikTok caption:[/bold]")
-    console.print(Panel(upload_result.get("caption_to_paste", tiktok_copy.get("full_caption", "")), border_style="cyan"))
+    # Mark complete in season plan
+    mark_episode_complete(plan, ep_num)
 
+    # --- Summary ---
+    console.print(f"\n[bold green]Episode {ep_num} complete![/bold green]")
+    console.print(Panel(
+        upload_result.get("caption_to_paste", tiktok_copy.get("full_caption", "")),
+        title="TikTok Caption",
+        border_style="cyan",
+    ))
     print_summary()
 
 
 # ---------------------------------------------------------------------------
-# Dry-run helpers — return placeholder paths without hitting any API
+# Dry-run placeholders
 # ---------------------------------------------------------------------------
 
 def _dry_run_script(episode_config: dict[str, Any]) -> dict[str, Any]:
-    """Return a minimal placeholder script for dry-run mode."""
     return {
         "episode_number": episode_config["episode_number"],
         "title": episode_config["title"],
         "concept": episode_config["concept"],
-        "educational_takeaway": "Dry-run educational takeaway",
+        "educational_takeaway": "Dry-run takeaway",
         "hook_text": "Dry-run hook",
-        "scenes": [
-            {
-                "scene_number": 1,
-                "duration_seconds": 5,
-                "shot_description": "Dry-run scene",
-                "dialogue": [
-                    {"character": "claudia", "line": "Hello world.", "emotion": "calm"}
-                ],
-                "educational_note": "test",
-                "visual_overlay": None,
-            }
-        ],
-        "outro": {
-            "winner": "claudia",
-            "takeaway_line": "Dry-run takeaway.",
-            "cliffhanger_text": "To be continued…",
-        },
+        "scenes": [{
+            "scene_number": 1, "duration_seconds": 5,
+            "shot_description": "Dry-run scene",
+            "dialogue": [{"character": "claudia", "line": "Hello.", "emotion": "calm"}],
+            "educational_note": "test", "visual_overlay": None,
+        }],
+        "outro": {"winner": "claudia", "takeaway_line": "Dry-run.", "cliffhanger_text": "…"},
     }
 
 
 def _dry_run_clips(script: dict[str, Any], ep_num: int) -> list[Path]:
-    """Return placeholder clip paths (files do not need to exist for dry-run)."""
     clips_dir = Path(__file__).parent / "output" / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
+    paths = []
     for scene in script.get("scenes", []):
         p = clips_dir / f"ep{ep_num}_scene{scene['scene_number']}_dryrun.mp4"
         p.touch()
@@ -262,7 +244,6 @@ def _dry_run_clips(script: dict[str, Any], ep_num: int) -> list[Path]:
 
 
 def _dry_run_visuals(script: dict[str, Any], ep_num: int) -> dict[str, Path]:
-    """Return placeholder visual paths."""
     images_dir = Path(__file__).parent / "output" / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     for name in ("title", "concept", "takeaway"):
@@ -275,7 +256,6 @@ def _dry_run_visuals(script: dict[str, Any], ep_num: int) -> dict[str, Path]:
 
 
 def _dry_run_final(ep_num: int) -> Path:
-    """Return a placeholder final video path."""
     final_dir = Path(__file__).parent / "output" / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
     p = final_dir / f"ep{ep_num}_final_dryrun.mp4"
@@ -284,38 +264,68 @@ def _dry_run_final(ep_num: int) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="AI Wars Episode Generator")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Skip all API calls; use placeholder files to test assembly logic",
-    )
-    parser.add_argument(
-        "--skip-upload",
-        action="store_true",
-        help="Stop before the TikTok upload step",
-    )
+    parser = argparse.ArgumentParser(description="AI Wars Season Generator")
+    parser.add_argument("--season", type=int, default=1, help="Season number (default: 1)")
+    parser.add_argument("--episode", type=int, default=None, help="Skip menu, produce this episode directly")
+    parser.add_argument("--dry-run", action="store_true", help="No real API calls; test pipeline with placeholders")
+    parser.add_argument("--skip-upload", action="store_true", help="Stop before TikTok upload")
+    parser.add_argument("--plan-only", action="store_true", help="Generate season plan and exit (no video production)")
     return parser.parse_args()
 
 
-def main() -> None:
-    """Main entry point."""
+async def main_async() -> None:
     args = _parse_args()
+    _show_banner()
 
     if args.dry_run:
-        console.print("[yellow]DRY-RUN mode — no real API calls will be made.[/yellow]")
+        console.print("[yellow]DRY-RUN mode — no real API calls.[/yellow]\n")
 
+    # Load or generate the season plan
     try:
-        episode_config = _intake_form()
+        plan = await _get_or_create_season(args.season)
+    except Exception as exc:
+        console.print(f"[red]✗ Season planning failed:[/red] {exc}")
+        sys.exit(1)
+
+    if args.plan_only:
+        _show_episode_table(plan)
+        console.print("\n[dim]--plan-only: exiting without producing any video.[/dim]")
+        return
+
+    # Show the episode table
+    _show_episode_table(plan)
+
+    # Pick an episode
+    if args.episode:
+        episode_number = args.episode
+    else:
+        console.print()
+        episode_number = IntPrompt.ask(
+            "[bold]Which episode do you want to produce?[/bold] (enter number)",
+            default=1,
+        )
+
+    # Get episode config from plan
+    from agents.season_agent import get_episode_config
+    try:
+        episode_config = get_episode_config(plan, episode_number)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    await run_episode(episode_config, plan, dry_run=args.dry_run, skip_upload=args.skip_upload)
+
+
+def main() -> None:
+    try:
+        asyncio.run(main_async())
     except (KeyboardInterrupt, EOFError):
         console.print("\n[dim]Cancelled.[/dim]")
         sys.exit(0)
-
-    asyncio.run(run_pipeline(episode_config, dry_run=args.dry_run, skip_upload=args.skip_upload))
 
 
 if __name__ == "__main__":
