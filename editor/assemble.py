@@ -278,22 +278,19 @@ async def build(
             result = await asyncio.to_thread(model.transcribe, str(draft_path))
             _build_srt(result["segments"], srt_path)
 
-            # --- Step 6: Burn subtitles + final export ---
+            # --- Step 6: Final export ---
+            # Note: subtitle burning requires libass (not in default FFmpeg build).
+            # The SRT file is saved alongside the video — import it in TikTok's
+            # caption editor or any video editor for styled captions.
             final_path = _OUTPUT_DIR / f"ep{ep_num}_final.mp4"
-            srt_escaped = str(srt_path).replace("'", "\\'").replace(":", "\\:")
             _run([
                 "ffmpeg", "-y", "-i", str(draft_path),
-                "-vf", (
-                    f"subtitles='{srt_escaped}':"
-                    "force_style='FontName=Arial,FontSize=18,"
-                    "PrimaryColour=&Hffffff,OutlineColour=&H000000,"
-                    "Outline=2,Alignment=2,MarginV=30'"
-                ),
                 "-vcodec", "libx264", "-pix_fmt", "yuv420p",
                 "-s", f"{_W}x{_H}",
                 "-crf", "23", "-preset", "fast",
                 "-acodec", "aac", "-b:a", "128k",
                 str(final_path),
-            ], label="burn subtitles + final export")
+            ], label="final export")
+            print(f"[assemble] Captions saved to: {srt_path}")
 
     return final_path
