@@ -99,6 +99,15 @@ async def generate(script: dict[str, Any], episode_config: dict[str, Any]) -> di
         response = await _call_with_retry(client, user_message)
 
         raw = response.content[0].text.strip()
-        caption_data: dict[str, Any] = json.loads(raw)
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        try:
+            caption_data: dict[str, Any] = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"[caption_agent] Raw response:\n{raw[:500]}")
+            raise RuntimeError(f"caption_agent: failed to parse JSON: {exc}") from exc
 
     return caption_data
