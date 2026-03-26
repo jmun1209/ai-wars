@@ -114,7 +114,21 @@ async def generate(vision: dict[str, Any]) -> dict[str, Any]:
 
     client = anthropic.Anthropic()
     response = await _call_with_retry(client, vision)
-    plan = json.loads(response.content[0].text.strip())
+    raw = response.content[0].text.strip()
+
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    try:
+        plan = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"[season_agent] Raw response was:\n{raw[:500]}")
+        raise RuntimeError(f"season_agent: failed to parse JSON response: {exc}") from exc
+
     plan_path.write_text(json.dumps(plan, indent=2))
     print(f"[season_agent] Season plan saved to {plan_path}")
     return plan

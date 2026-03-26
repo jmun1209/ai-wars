@@ -157,7 +157,16 @@ async def generate(episode_config: dict[str, Any]) -> dict[str, Any]:
         response = await _call_with_retry(client, user_message)
 
         raw = response.content[0].text.strip()
-        script = json.loads(raw)
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        try:
+            script = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"[script_agent] Raw response was:\n{raw[:500]}")
+            raise RuntimeError(f"script_agent: failed to parse JSON: {exc}") from exc
 
         output_path.write_text(json.dumps(script, indent=2))
         print(f"[script_agent] Script saved to {output_path}")
