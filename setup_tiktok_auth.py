@@ -16,7 +16,7 @@ from dotenv import load_dotenv, set_key
 load_dotenv()
 
 _ENV_FILE = Path(__file__).parent / ".env"
-_REDIRECT_URI = "https://jmun1209.github.io/ai-wars/callback"
+_REDIRECT_URI = "https://jmun1209.github.io/ai-wars/docs/callback.html"
 _SCOPES = "user.info.basic,video.upload"
 _AUTH_BASE = "https://www.tiktok.com/v2/auth/authorize/"
 _TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
