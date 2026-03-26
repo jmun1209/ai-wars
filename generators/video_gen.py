@@ -22,7 +22,7 @@ _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _CHARACTERS_PATH = Path(__file__).parent.parent / "config" / "characters.json"
 
-_KLING_BASE_URL = "https://api.kling.ai/v1"
+_KLING_BASE_URL = "https://api.klingai.com/v1"
 _POLL_INTERVAL = 5       # seconds between status checks
 _TIMEOUT_SECONDS = 300   # 5-minute per-clip timeout
 

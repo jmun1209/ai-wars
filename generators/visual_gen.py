@@ -100,12 +100,40 @@ async def _generate_image(
 
         except Exception as exc:
             if attempt == max_retries - 1:
-                raise RuntimeError(f"visual_gen: failed for {output_path.name}: {exc}") from exc
+                print(f"[visual_gen] All retries failed for {output_path.name}: {exc}. Using fallback.")
+                return _make_fallback_image(prompt, output_path)
             wait = 2 ** attempt
             print(f"[visual_gen] Attempt {attempt + 1} failed: {exc}. Retrying in {wait}s…")
             await asyncio.sleep(wait)
 
-    raise RuntimeError(f"visual_gen: max retries exceeded for {output_path.name}")
+    return _make_fallback_image(prompt, output_path)
+
+
+def _make_fallback_image(prompt: str, output_path: Path) -> Path:
+    """Generate a plain dark placeholder image with text using Pillow.
+
+    Args:
+        prompt: Used to extract display text for the image.
+        output_path: Where to save the PNG.
+
+    Returns:
+        Path to the saved fallback PNG.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (1080, 1920), "#1a1a2e")
+    draw = ImageDraw.Draw(img)
+
+    # Extract a short label from the prompt (first 60 chars)
+    label = prompt[:60].strip()
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=60)
+    except OSError:
+        font = ImageFont.load_default()
+
+    draw.text((540, 960), label, fill="#7F77DD", anchor="mm", font=font)
+    img.save(output_path)
+    return output_path
 
 
 async def generate_all(script: dict[str, Any]) -> dict[str, Path]:
