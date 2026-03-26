@@ -1,0 +1,12 @@
+.env
+output/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+.venv/
+venv/
+assets/background_music.mp3
+.claude-flow/
+.omc/

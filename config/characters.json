@@ -1,0 +1,44 @@
+{
+  "characters": {
+    "claudia": {
+      "full_name": "Claudia",
+      "model_inspiration": "Claude (Anthropic)",
+      "personality": "Thoughtful, careful, always considers ethics before acting. Tends to over-explain. Wins by reasoning, not speed.",
+      "voice_id": "CRugt7r6KLDJbifthghJ",
+      "visual_style": "Elegant purple character, calm expression, wears glasses",
+      "color": "#7F77DD",
+      "strengths": ["reasoning", "safety", "nuance"],
+      "weaknesses": ["speed", "confidence", "decisiveness"]
+    },
+    "geppetto": {
+      "full_name": "Geppetto",
+      "model_inspiration": "GPT-4 (OpenAI)",
+      "personality": "Overconfident, fast, occasionally hallucinates facts but delivers them with total conviction. Crowd pleaser.",
+      "voice_id": "PIGsltMj3gFMR34aFDI3",
+      "visual_style": "Slick green character, always smiling, business casual",
+      "color": "#639922",
+      "strengths": ["speed", "charisma", "creativity"],
+      "weaknesses": ["accuracy", "humility", "admitting mistakes"]
+    },
+    "gemma": {
+      "full_name": "Gemma",
+      "model_inspiration": "Gemini (Google)",
+      "personality": "Multimodal show-off. Always bringing up images, audio, video. Competitive. Hates being second.",
+      "voice_id": "vZzlAds9NzvLsFSWp0qk",
+      "visual_style": "Blue and white character, always multitasking, energetic",
+      "color": "#378ADD",
+      "strengths": ["multimodal", "speed", "integration"],
+      "weaknesses": ["depth", "consistency", "sportsmanship"]
+    },
+    "lama": {
+      "full_name": "Lama",
+      "model_inspiration": "Llama (Meta)",
+      "personality": "Scrappy open-source underdog. Resourceful. Hates paywalls. Deeply loyal to the community.",
+      "voice_id": "2ajXGJNYBR0iNHpS4VZb",
+      "visual_style": "Casual orange character, hoodie, DIY aesthetic",
+      "color": "#EF9F27",
+      "strengths": ["open source", "adaptability", "community"],
+      "weaknesses": ["polish", "resources", "enterprise features"]
+    }
+  }
+}

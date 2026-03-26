@@ -1,0 +1,9 @@
+anthropic>=0.25.0
+elevenlabs>=1.0.0
+replicate>=0.25.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+ffmpeg-python>=0.2.0
+rich>=13.0.0
+openai-whisper>=20231117
+Pillow>=10.0.0
