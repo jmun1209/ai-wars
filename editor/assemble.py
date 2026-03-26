@@ -176,15 +176,8 @@ def _assemble_scene(
         f"loop=loop=-1:size=999:start=0,trim=duration={audio_dur},setpts=PTS-STARTPTS"
     )
 
-    # Add overlay text if present
-    overlay_text = scene.get("visual_overlay")
-    if overlay_text:
-        escaped = overlay_text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
-        vf += (
-            f",drawtext=text='{escaped}':fontcolor=white:fontsize=48"
-            f":box=1:boxcolor=black@0.5:boxborderw=10"
-            f":x=(w-text_w)/2:y=h*0.15"
-        )
+    # Note: drawtext requires libfreetype — skipped for compatibility.
+    # Whisper auto-captions handle on-screen text instead.
 
     _run([
         "ffmpeg", "-y",
