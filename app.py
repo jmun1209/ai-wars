@@ -184,6 +184,7 @@ async def run_episode(
         sys.exit(1)
 
     # --- Upload ---
+    upload_result: dict = {"caption_to_paste": tiktok_copy.get("full_caption", "")}
     if not skip_upload and not dry_run:
         try:
             with _spinner(f"Ep {ep_num} — Uploading to TikTok"):
@@ -195,7 +196,6 @@ async def run_episode(
         except Exception as exc:
             console.print(f"[red]✗ Upload failed:[/red] {exc}")
     else:
-        upload_result = {"caption_to_paste": tiktok_copy.get("full_caption", "")}
         console.print("[dim]Skipping TikTok upload[/dim]")
 
     # Mark complete in season plan
