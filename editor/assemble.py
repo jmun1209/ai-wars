@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
-import ffmpeg
 import whisper
 from dotenv import load_dotenv
 
@@ -23,153 +23,194 @@ _ASSETS_DIR = Path(__file__).parent.parent / "assets"
 _MUSIC_PATH = _ASSETS_DIR / "background_music.mp3"
 
 _LINE_GAP = 0.2  # seconds of silence between dialogue lines
+_W, _H = 1080, 1920
+
+
+def _run(cmd: list[str], label: str = "") -> None:
+    """Run an ffmpeg command, raising with full stderr on failure.
+
+    Args:
+        cmd: Command + arguments list.
+        label: Human-readable label for error messages.
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg failed{' (' + label + ')' if label else ''}:\n"
+            f"CMD: {' '.join(cmd)}\n"
+            f"STDERR: {result.stderr[-2000:]}"
+        )
+
+
+def _probe_has_audio(path: Path) -> bool:
+    """Return True if the file has at least one audio stream."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return "audio" in result.stdout
+
+
+def _probe_duration(path: Path) -> float:
+    """Return duration in seconds via ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return 5.0
 
 
 def _image_to_clip(image_path: Path, duration: float, output_path: Path) -> None:
-    """Convert a static PNG image to a video clip of the given duration.
+    """Convert a PNG to a video clip with silent audio track.
 
     Args:
-        image_path: Source PNG file.
-        duration: How many seconds the clip should hold.
-        output_path: Destination MP4 file.
+        image_path: Source PNG.
+        duration: Clip duration in seconds.
+        output_path: Destination MP4.
     """
-    (
-        ffmpeg
-        .input(str(image_path), loop=1, t=duration, framerate=24)
-        .filter("scale", 1080, 1920)
-        .output(
-            str(output_path),
-            vcodec="libx264",
-            pix_fmt="yuv420p",
-            r=24,
-            an=None,  # no audio track
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    _run([
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", str(image_path),
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+        "-t", str(duration),
+        "-vf", f"scale={_W}:{_H}:force_original_aspect_ratio=decrease,pad={_W}:{_H}:(ow-iw)/2:(oh-ih)/2",
+        "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+        "-acodec", "aac", "-ar", "44100", "-ac", "2",
+        "-shortest", str(output_path),
+    ], label=f"image_to_clip {image_path.name}")
 
 
-def _get_audio_duration(path: Path) -> float:
-    """Return the duration of an audio file in seconds using ffprobe."""
-    probe = ffmpeg.probe(str(path))
-    return float(probe["format"]["duration"])
+def _concat_audio_files(audio_paths: list[Path], output_path: Path, gap: float = _LINE_GAP) -> None:
+    """Concatenate multiple audio files with a small gap between each.
+
+    Args:
+        audio_paths: Ordered list of MP3 files.
+        output_path: Destination MP3.
+        gap: Silence gap in seconds between lines.
+    """
+    if not audio_paths:
+        # Generate silent audio of 1 second
+        _run([
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", "1", "-acodec", "libmp3lame", str(output_path),
+        ], label="silent audio")
+        return
+
+    # Build filter_complex for concat with silence gaps
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    labels: list[str] = []
+
+    for i, p in enumerate(audio_paths):
+        inputs += ["-i", str(p)]
+        filter_parts.append(f"[{i}]apad=pad_dur={gap}[a{i}]")
+        labels.append(f"[a{i}]")
+
+    filter_complex = ";".join(filter_parts) + ";" + "".join(labels) + f"concat=n={len(audio_paths)}:v=0:a=1[out]"
+
+    _run([
+        "ffmpeg", "-y", *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-acodec", "libmp3lame", "-ar", "44100", str(output_path),
+    ], label="concat_audio")
 
 
 def _assemble_scene(
     scene: dict[str, Any],
     video_clip: Path,
     audio_files: dict[tuple[int, int], Path],
-    ep_num: int,
     tmp_dir: Path,
 ) -> Path:
-    """Layer audio onto a video clip and burn any visual overlay text.
+    """Layer dialogue audio onto a video clip and burn any overlay text.
 
     Args:
         scene: Scene dict from the script.
-        video_clip: Path to the raw scene video clip.
+        video_clip: Path to raw scene video clip.
         audio_files: Mapping of (scene_num, line_idx) → MP3 path.
-        ep_num: Episode number for temp file naming.
-        tmp_dir: Temporary directory for intermediate files.
+        tmp_dir: Temporary directory.
 
     Returns:
-        Path to the assembled scene MP4.
+        Path to assembled scene MP4.
     """
     scene_num = scene["scene_number"]
     dialogue = scene.get("dialogue", [])
-
-    # Build a silence-padded audio track by concatenating line audio files
-    audio_inputs: list[ffmpeg.nodes.FilterableStream] = []
-    silence_path = tmp_dir / "silence.mp3"
-
-    if not silence_path.exists():
-        (
-            ffmpeg
-            .input("anullsrc=r=44100:cl=mono", f="lavfi", t=_LINE_GAP)
-            .output(str(silence_path), acodec="libmp3lame", ar=44100)
-            .overwrite_output()
-            .run(quiet=True)
-        )
-
-    for line_idx in range(len(dialogue)):
-        key = (scene_num, line_idx)
-        if key in audio_files:
-            audio_inputs.append(ffmpeg.input(str(audio_files[key])).audio)
-            # Small gap after each line
-            audio_inputs.append(ffmpeg.input(str(silence_path)).audio)
-
     scene_out = tmp_dir / f"scene_{scene_num}_assembled.mp4"
 
-    if not audio_inputs:
-        # No dialogue: just copy the clip
-        shutil.copy(video_clip, scene_out)
+    # Collect audio lines for this scene
+    line_paths = [
+        audio_files[(scene_num, i)]
+        for i in range(len(dialogue))
+        if (scene_num, i) in audio_files
+    ]
+
+    if not line_paths:
+        # No audio — ensure clip has an audio track and just copy
+        if _probe_has_audio(video_clip):
+            shutil.copy(video_clip, scene_out)
+        else:
+            dur = _probe_duration(video_clip)
+            _run([
+                "ffmpeg", "-y", "-i", str(video_clip),
+                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+                "-t", str(dur),
+                "-c:v", "copy", "-acodec", "aac", "-ar", "44100", "-ac", "2",
+                "-shortest", str(scene_out),
+            ], label=f"add_silent_audio scene {scene_num}")
         return scene_out
 
-    # Concatenate all audio segments
-    combined_audio = ffmpeg.concat(*audio_inputs, v=0, a=1)
-    combined_audio_path = tmp_dir / f"scene_{scene_num}_audio.mp3"
-    (
-        combined_audio
-        .output(str(combined_audio_path), acodec="libmp3lame", ar=44100)
-        .overwrite_output()
-        .run(quiet=True)
+    # Concatenate dialogue audio
+    combined_audio = tmp_dir / f"scene_{scene_num}_audio.mp3"
+    _concat_audio_files(line_paths, combined_audio)
+    audio_dur = _probe_duration(combined_audio)
+
+    # Build video filter: scale + loop to fill audio duration
+    vf = (
+        f"scale={_W}:{_H}:force_original_aspect_ratio=decrease,"
+        f"pad={_W}:{_H}:(ow-iw)/2:(oh-ih)/2,"
+        f"loop=loop=-1:size=999:start=0,trim=duration={audio_dur},setpts=PTS-STARTPTS"
     )
 
-    audio_duration = _get_audio_duration(combined_audio_path)
-    video_input = ffmpeg.input(str(video_clip))
-
-    # Loop video to match audio length if needed
-    video_stream = video_input.video.filter("loop", loop=-1, size=999999).filter(
-        "setpts", "N/FRAME_RATE/TB"
-    ).trim(duration=audio_duration).filter("setpts", "PTS-STARTPTS")
-    audio_stream = ffmpeg.input(str(combined_audio_path)).audio
-
-    # Burn visual overlay text if present
+    # Add overlay text if present
     overlay_text = scene.get("visual_overlay")
     if overlay_text:
-        escaped = overlay_text.replace("'", "\\'").replace(":", "\\:")
-        video_stream = video_stream.drawtext(
-            text=escaped,
-            fontcolor="white",
-            fontsize=48,
-            box=1,
-            boxcolor="black@0.5",
-            boxborderw=10,
-            x="(w-text_w)/2",
-            y="h*0.15",
+        escaped = overlay_text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+        vf += (
+            f",drawtext=text='{escaped}':fontcolor=white:fontsize=48"
+            f":box=1:boxcolor=black@0.5:boxborderw=10"
+            f":x=(w-text_w)/2:y=h*0.15"
         )
 
-    (
-        ffmpeg
-        .output(video_stream, audio_stream, str(scene_out), vcodec="libx264", acodec="aac", pix_fmt="yuv420p")
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    _run([
+        "ffmpeg", "-y",
+        "-i", str(video_clip),
+        "-i", str(combined_audio),
+        "-vf", vf,
+        "-t", str(audio_dur),
+        "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+        "-acodec", "aac", "-ar", "44100", "-ac", "2",
+        str(scene_out),
+    ], label=f"assemble scene {scene_num}")
 
     return scene_out
 
 
 def _build_srt(segments: list[dict[str, Any]], srt_path: Path) -> None:
-    """Write a Whisper segments list to an SRT subtitle file.
+    """Write Whisper segments to an SRT file."""
+    def _fmt(s: float) -> str:
+        h, rem = divmod(int(s), 3600)
+        m, sec = divmod(rem, 60)
+        ms = int((s % 1) * 1000)
+        return f"{h:02}:{m:02}:{sec:02},{ms:03}"
 
-    Args:
-        segments: List of Whisper segment dicts with start, end, text.
-        srt_path: Destination SRT file path.
-    """
     lines: list[str] = []
-
-    def _fmt(seconds: float) -> str:
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        ms = int((seconds % 1) * 1000)
-        return f"{h:02}:{m:02}:{s:02},{ms:03}"
-
-    for i, seg in enumerate(segments, start=1):
-        lines.append(str(i))
-        lines.append(f"{_fmt(seg['start'])} --> {_fmt(seg['end'])}")
-        lines.append(seg["text"].strip())
-        lines.append("")
-
+    for i, seg in enumerate(segments, 1):
+        lines += [str(i), f"{_fmt(seg['start'])} --> {_fmt(seg['end'])}", seg["text"].strip(), ""]
     srt_path.write_text("\n".join(lines))
 
 
@@ -179,21 +220,13 @@ async def build(
     video_clips: list[Path],
     visual_files: dict[str, Path],
 ) -> Path:
-    """Assemble the final episode MP4 from all generated assets.
-
-    Steps:
-        1. Assemble each scene (audio + video + overlay)
-        2. Prepend title card and append takeaway card
-        3. Concatenate all segments
-        4. Add background music (ducked to 15%)
-        5. Run Whisper for auto-captions and burn subtitles
-        6. Export final H.264/AAC video
+    """Assemble the final episode MP4.
 
     Args:
         script: Parsed script dict.
         audio_files: Mapping of (scene_num, line_idx) → MP3 path.
         video_clips: List of scene clip paths in order.
-        visual_files: Dict with 'title_card', 'concept', 'takeaway_card' image paths.
+        visual_files: Dict with title_card, concept, takeaway_card PNG paths.
 
     Returns:
         Path to the final exported MP4.
@@ -204,93 +237,70 @@ async def build(
         with tempfile.TemporaryDirectory(prefix=f"aiwars_ep{ep_num}_") as _tmp:
             tmp_dir = Path(_tmp)
 
-            # --- Step 1: Per-scene assembly ---
-            assembled_scenes: list[Path] = []
+            # --- Step 1: Assemble each scene ---
+            assembled: list[Path] = []
             for scene, clip in zip(script["scenes"], video_clips):
-                assembled = await asyncio.to_thread(
-                    _assemble_scene, scene, clip, audio_files, ep_num, tmp_dir
-                )
-                assembled_scenes.append(assembled)
+                s = await asyncio.to_thread(_assemble_scene, scene, clip, audio_files, tmp_dir)
+                assembled.append(s)
 
-            # --- Step 2: Title card (2s) and takeaway card (3s) ---
+            # --- Step 2: Image cards with silent audio ---
             title_clip = tmp_dir / "title_card.mp4"
             takeaway_clip = tmp_dir / "takeaway_card.mp4"
-            await asyncio.to_thread(_image_to_clip, visual_files["title_card"], 2.0, title_clip)
-            await asyncio.to_thread(_image_to_clip, visual_files["takeaway_card"], 3.0, takeaway_clip)
+            await asyncio.gather(
+                asyncio.to_thread(_image_to_clip, visual_files["title_card"], 2.0, title_clip),
+                asyncio.to_thread(_image_to_clip, visual_files["takeaway_card"], 3.0, takeaway_clip),
+            )
 
-            # --- Step 3: Concatenate all segments ---
-            all_segments = [title_clip] + assembled_scenes + [takeaway_clip]
+            # --- Step 3: Concat everything ---
+            all_segments = [title_clip] + assembled + [takeaway_clip]
+            concat_list = tmp_dir / "concat.txt"
+            concat_list.write_text("\n".join(f"file '{p}'" for p in all_segments))
             concat_path = tmp_dir / "concat.mp4"
+            _run([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(concat_list),
+                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                "-acodec", "aac", "-ar", "44100", "-ac", "2",
+                str(concat_path),
+            ], label="concat segments")
 
-            # Write a concat list file
-            list_file = tmp_dir / "concat_list.txt"
-            list_file.write_text(
-                "\n".join(f"file '{p}'" for p in all_segments)
-            )
-            (
-                ffmpeg
-                .input(str(list_file), format="concat", safe=0)
-                .output(str(concat_path), c="copy")
-                .overwrite_output()
-                .run(quiet=True)
-            )
-
-            # --- Step 4: Add background music ---
+            # --- Step 4: Background music ---
             draft_path = _OUTPUT_DIR / f"ep{ep_num}_draft.mp4"
             if _MUSIC_PATH.exists():
-                video_in = ffmpeg.input(str(concat_path))
-                music_in = ffmpeg.input(str(_MUSIC_PATH), stream_loop=-1)
-                # Duck music to 15%
-                ducked_music = music_in.audio.filter("volume", 0.15)
-                # Mix dialogue audio + ducked music
-                mixed = ffmpeg.filter(
-                    [video_in.audio, ducked_music],
-                    "amix",
-                    inputs=2,
-                    duration="first",
-                )
-                (
-                    ffmpeg
-                    .output(video_in.video, mixed, str(draft_path), vcodec="copy", acodec="aac")
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
+                _run([
+                    "ffmpeg", "-y",
+                    "-i", str(concat_path),
+                    "-stream_loop", "-1", "-i", str(_MUSIC_PATH),
+                    "-filter_complex", "[1:a]volume=0.15[music];[0:a][music]amix=inputs=2:duration=first[aout]",
+                    "-map", "0:v", "-map", "[aout]",
+                    "-vcodec", "copy", "-acodec", "aac",
+                    "-shortest", str(draft_path),
+                ], label="add background music")
             else:
                 shutil.copy(concat_path, draft_path)
 
-            # --- Step 5: Auto-captions with Whisper ---
+            # --- Step 5: Whisper captions ---
             srt_path = _OUTPUT_DIR / f"ep{ep_num}.srt"
             model = whisper.load_model("base")
             result = await asyncio.to_thread(model.transcribe, str(draft_path))
             _build_srt(result["segments"], srt_path)
 
-            # --- Step 6: Burn subtitles and export final video ---
+            # --- Step 6: Burn subtitles + final export ---
             final_path = _OUTPUT_DIR / f"ep{ep_num}_final.mp4"
-            escaped_srt = str(srt_path).replace("'", "\\'").replace(":", "\\:")
-            (
-                ffmpeg
-                .input(str(draft_path))
-                .video
-                .filter(
-                    "subtitles",
-                    escaped_srt,
-                    force_style=(
-                        "FontName=Arial,FontSize=18,PrimaryColour=&Hffffff,"
-                        "OutlineColour=&H000000,Outline=2,Alignment=2,MarginV=30"
-                    ),
-                )
-                .output(
-                    str(final_path),
-                    vcodec="libx264",
-                    acodec="aac",
-                    pix_fmt="yuv420p",
-                    s="1080x1920",
-                    crf=23,
-                    preset="fast",
-                    **{"b:a": "128k"},
-                )
-                .overwrite_output()
-                .run(quiet=True)
-            )
+            srt_escaped = str(srt_path).replace("'", "\\'").replace(":", "\\:")
+            _run([
+                "ffmpeg", "-y", "-i", str(draft_path),
+                "-vf", (
+                    f"subtitles='{srt_escaped}':"
+                    "force_style='FontName=Arial,FontSize=18,"
+                    "PrimaryColour=&Hffffff,OutlineColour=&H000000,"
+                    "Outline=2,Alignment=2,MarginV=30'"
+                ),
+                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                "-s", f"{_W}x{_H}",
+                "-crf", "23", "-preset", "fast",
+                "-acodec", "aac", "-b:a", "128k",
+                str(final_path),
+            ], label="burn subtitles + final export")
 
     return final_path
